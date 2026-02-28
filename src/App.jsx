@@ -8,51 +8,63 @@ const GOOD = ['🍕','🍔','🍣','🍩','🍎','🍓','🌮','🍜','🧁','�
 const BAD  = ['💣','☠️','🤢','🦠','💩']
 
 export default function App() {
-  const videoRef   = useRef(null)
-  const canvasRef  = useRef(null)
-  const modelRef   = useRef(null)
-  const stateRef   = useRef({
+  const videoRef  = useRef(null)
+  const canvasRef = useRef(null)
+  const modelRef  = useRef(null)
+  const rafRef    = useRef(null)
+  const detRef    = useRef(null)  // setInterval id
+  const gRef      = useRef({
     emojis:[], score:0, lives:3,
     fx:W/2, fy:H/2,
-    running:false, over:false,
-    lastSpawn:0, detecting:false,
+    running:false, detecting:false,
+    lastSpawn:0,
   })
-  const rafRef = useRef(null)
 
-  const [phase,  setPhase]  = useState('title')  // title | loading | play | over
+  const [phase,  setPhase]  = useState('title')
   const [score,  setScore]  = useState(0)
   const [lives,  setLives]  = useState(3)
-  const [status, setStatus] = useState('')
+  const [dbg,    setDbg]    = useState('')   // デバッグ表示
 
-  /* ── 顔検出ループ（別setInterval） ── */
-  const detectLoop = useCallback(async () => {
-    const s = stateRef.current
+  /* ── 顔検出（100ms間隔） ── */
+  const runDetect = useCallback(async () => {
+    const g = gRef.current
+    if (!g.running || g.detecting) return
     const v = videoRef.current
-    if (!s.running || s.detecting || !modelRef.current) return
-    if (!v || v.readyState < 2) return
-    s.detecting = true
+    const m = modelRef.current
+    if (!v || !m || v.readyState < 2 || v.paused) return
+    g.detecting = true
     try {
-      const preds = await modelRef.current.estimateFaces(v, false)
+      const preds = await m.estimateFaces(v, false)
       if (preds.length > 0) {
         const [tlX, tlY] = preds[0].topLeft
         const [brX, brY] = preds[0].bottomRight
-        s.fx = W - (tlX + brX) / 2   // 鏡像補正
-        s.fy = (tlY + brY) / 2
+        g.fx = W - (tlX + brX) / 2   // 鏡像補正
+        g.fy = (tlY + brY) / 2
+        setDbg(`顔検出 ✅ (${Math.round(g.fx)}, ${Math.round(g.fy)})`)
+      } else {
+        setDbg('顔を映してください 👀')
       }
-    } catch(_){}
-    s.detecting = false
+    } catch(e) {
+      setDbg('検出エラー: ' + e.message)
+    }
+    g.detecting = false
   }, [])
 
-  /* ── ゲームループ（rAF） ── */
+  /* ── ゲームループ ── */
   const loop = useCallback(() => {
-    const s = stateRef.current
-    if (!s.running) return
+    const g = gRef.current
+    if (!g.running) return
 
     const canvas = canvasRef.current
     const video  = videoRef.current
-    const ctx    = canvas.getContext('2d')
+    if (!canvas || !video || video.readyState < 2) {
+      rafRef.current = requestAnimationFrame(loop)
+      return
+    }
 
-    /* 背景：カメラ映像（鏡像） */
+    const ctx = canvas.getContext('2d')
+
+    // カメラ映像（鏡像）
     ctx.save()
     ctx.scale(-1, 1)
     ctx.drawImage(video, -W, 0, W, H)
@@ -60,138 +72,156 @@ export default function App() {
     ctx.fillStyle = 'rgba(0,0,0,0.18)'
     ctx.fillRect(0, 0, W, H)
 
-    /* 絵文字スポーン */
+    // スポーン
     const now = Date.now()
-    const interval = Math.max(500, 1400 - s.score * 8)
-    if (now - s.lastSpawn > interval) {
+    const interval = Math.max(500, 1400 - g.score * 8)
+    if (now - g.lastSpawn > interval) {
       const bad = Math.random() < 0.22
-      s.emojis.push({
+      g.emojis.push({
         x: 30 + Math.random() * (W - 60),
         y: -35,
         e: bad ? BAD[Math.floor(Math.random()*BAD.length)] : GOOD[Math.floor(Math.random()*GOOD.length)],
         bad,
-        spd: 2.2 + s.score * 0.025 + Math.random() * 1.5,
-        size: 38,
+        spd: 2.2 + g.score * 0.025 + Math.random() * 1.5,
       })
-      s.lastSpawn = now
+      g.lastSpawn = now
     }
 
-    /* 絵文字更新・描画・判定 */
+    // 絵文字更新・当たり判定
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     const dead = []
-    for (let i = s.emojis.length - 1; i >= 0; i--) {
-      const em = s.emojis[i]
+    for (let i = g.emojis.length - 1; i >= 0; i--) {
+      const em = g.emojis[i]
       em.y += em.spd
-      ctx.font = `${em.size}px serif`
+      ctx.font = '38px serif'
       ctx.fillText(em.e, em.x, em.y)
 
-      const dx = em.x - s.fx, dy = em.y - s.fy
+      const dx = em.x - g.fx, dy = em.y - g.fy
       if (dx*dx + dy*dy < CATCH_R*CATCH_R) {
         if (em.bad) {
-          s.lives = Math.max(0, s.lives - 1)
-          setLives(s.lives)
-          if (s.lives === 0) { endGame(); return }
+          g.lives = Math.max(0, g.lives - 1)
+          setLives(g.lives)
+          if (g.lives === 0) {
+            g.running = false
+            clearInterval(detRef.current)
+            cancelAnimationFrame(rafRef.current)
+            setPhase('over')
+            return
+          }
         } else {
-          s.score++
-          setScore(s.score)
+          g.score++
+          setScore(g.score)
         }
         dead.push(i)
       } else if (em.y > H + 50) {
         dead.push(i)
       }
     }
-    dead.forEach(i => s.emojis.splice(i, 1))
+    dead.forEach(i => g.emojis.splice(i, 1))
 
-    /* 顔インジケーター */
+    // 顔インジケーター
     ctx.beginPath()
-    ctx.arc(s.fx, s.fy, CATCH_R, 0, Math.PI*2)
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)'
+    ctx.arc(g.fx, g.fy, CATCH_R, 0, Math.PI*2)
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)'
     ctx.lineWidth = 3
     ctx.stroke()
     ctx.font = '44px serif'
-    ctx.fillText('😋', s.fx, s.fy)
+    ctx.fillText('😋', g.fx, g.fy)
 
-    /* HUD */
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'
+    // HUD
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'
     ctx.fillRect(0, 0, W, 52)
     ctx.fillStyle = '#fff'
-    ctx.font = 'bold 22px "Helvetica Neue",sans-serif'
+    ctx.font = 'bold 22px sans-serif'
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
-    ctx.fillText(`スコア: ${s.score}`, 16, 26)
+    ctx.fillText(`スコア: ${g.score}`, 14, 26)
     ctx.textAlign = 'right'
-    ctx.fillText('❤️'.repeat(Math.max(0, s.lives)), W - 12, 26)
+    ctx.fillText('❤️'.repeat(Math.max(0, g.lives)), W - 12, 26)
 
     rafRef.current = requestAnimationFrame(loop)
-  }, [])
-
-  /* ── ゲーム終了 ── */
-  const endGame = useCallback(() => {
-    const s = stateRef.current
-    s.running = false
-    cancelAnimationFrame(rafRef.current)
-    setPhase('over')
   }, [])
 
   /* ── スタート ── */
   const startGame = async () => {
     setPhase('loading')
-    setStatus('📷 カメラを起動中...')
+
     try {
+      // 1. カメラ取得
+      setDbg('📷 カメラ起動中...')
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode:'user', width:W, height:H }
+        video: { facingMode: 'user', width: W, height: H },
+        audio: false,
       })
       const v = videoRef.current
       v.srcObject = stream
-      await new Promise(res => v.addEventListener('loadeddata', res, { once:true }))
 
-      setStatus('🧠 AI読み込み中...')
+      // 再生開始を確実に待つ
+      await new Promise((res, rej) => {
+        v.onloadeddata = res
+        v.onerror = rej
+        v.play().catch(rej)
+        setTimeout(res, 3000)  // タイムアウト保険
+      })
+      setDbg('✅ カメラ起動完了')
+
+      // 2. TF.js + モデル読み込み
+      setDbg('🧠 AIモデル読み込み中...')
+      await tf.setBackend('webgl')
       await tf.ready()
       modelRef.current = await blazeface.load()
+      setDbg('✅ モデル読み込み完了')
 
-      /* ゲーム状態リセット */
-      const s = stateRef.current
-      s.emojis = []; s.score = 0; s.lives = 3
-      s.fx = W/2; s.fy = H/2
-      s.running = true; s.over = false
-      s.lastSpawn = 0; s.detecting = false
+      // 3. ゲーム状態リセット
+      const g = gRef.current
+      Object.assign(g, {
+        emojis:[], score:0, lives:3,
+        fx:W/2, fy:H/2,
+        running:true, detecting:false,
+        lastSpawn:0,
+      })
       setScore(0); setLives(3)
+
+      // 4. 顔検出ループ開始
+      clearInterval(detRef.current)
+      detRef.current = setInterval(runDetect, 120)
+
       setPhase('play')
-
-      /* 顔検出 100ms間隔 */
-      const det = setInterval(detectLoop, 100)
-      /* クリーンアップ登録 */
-      stateRef.current._clearDet = () => clearInterval(det)
-
       requestAnimationFrame(loop)
+
     } catch(err) {
-      setStatus(`エラー: ${err.message}`)
-      setTimeout(() => setPhase('title'), 3000)
+      console.error(err)
+      setDbg(`❌ エラー: ${err.message}`)
+      setPhase('error')
     }
   }
 
-  /* アンマウント時クリーンアップ */
+  // アンマウント時クリーンアップ
   useEffect(() => () => {
-    stateRef.current.running = false
-    stateRef.current._clearDet?.()
+    gRef.current.running = false
+    clearInterval(detRef.current)
     cancelAnimationFrame(rafRef.current)
+    videoRef.current?.srcObject?.getTracks().forEach(t => t.stop())
   }, [])
 
   /* ── UI ── */
-  const boxStyle = {
-    width:W, height:H, background:'#1a1a2e',
-    borderRadius:18, display:'flex', flexDirection:'column',
-    alignItems:'center', justifyContent:'center', gap:22,
+  const center = {
+    width:W, height:H, borderRadius:18,
+    background:'#1a1a2e', display:'flex',
+    flexDirection:'column', alignItems:'center',
+    justifyContent:'center', gap:22,
+    maxWidth:'100%',
   }
 
   return (
     <div style={{
-      minHeight:'100vh', background:'linear-gradient(135deg,#0f0c29,#302b63,#24243e)',
-      display:'flex', flexDirection:'column', alignItems:'center',
-      justifyContent:'center', fontFamily:'"Helvetica Neue",sans-serif', color:'#fff',
-      padding:16,
+      minHeight:'100vh',
+      background:'linear-gradient(135deg,#0f0c29,#302b63,#24243e)',
+      display:'flex', flexDirection:'column',
+      alignItems:'center', justifyContent:'center',
+      fontFamily:'"Helvetica Neue",sans-serif', color:'#fff', padding:16,
     }}>
-      <h1 style={{ fontSize:26, fontWeight:800, margin:'0 0 16px', letterSpacing:1 }}>
+      <h1 style={{ fontSize:26, fontWeight:800, margin:'0 0 16px' }}>
         😋 絵文字キャッチゲーム
       </h1>
 
@@ -200,16 +230,18 @@ export default function App() {
           style={{ display:'none' }} width={W} height={H} />
 
         <canvas ref={canvasRef} width={W} height={H}
-          style={{ borderRadius:18, display: phase==='play' ? 'block' : 'none',
-            maxWidth:'100%', boxShadow:'0 8px 40px rgba(0,0,0,0.5)' }} />
+          style={{
+            borderRadius:18, display: phase==='play' ? 'block' : 'none',
+            maxWidth:'100%', boxShadow:'0 8px 40px rgba(0,0,0,0.5)',
+          }} />
 
         {/* タイトル */}
         {phase === 'title' && (
-          <div style={boxStyle}>
+          <div style={center}>
             <div style={{ fontSize:72 }}>😋</div>
-            <div style={{ textAlign:'center', color:'#ccc', fontSize:15, lineHeight:1.9, maxWidth:340 }}>
+            <div style={{ textAlign:'center', color:'#ccc', fontSize:15, lineHeight:1.9, maxWidth:360 }}>
               インカメラで顔を認識！<br/>
-              降ってくる絵文字に顔を近づけて食べよう！<br/>
+              降ってくる絵文字に近づけて食べよう！<br/>
               <span style={{ color:'#ff6b9d' }}>💣 ☠️ は避けてね！</span>
             </div>
             <button onClick={startGame} style={{
@@ -223,17 +255,31 @@ export default function App() {
 
         {/* ローディング */}
         {phase === 'loading' && (
-          <div style={boxStyle}>
-            <div style={{ fontSize:56 }}>⏳</div>
-            <div style={{ fontSize:18, color:'#aaa' }}>{status}</div>
+          <div style={center}>
+            <div style={{ fontSize:52 }}>⏳</div>
+            <div style={{ fontSize:17, color:'#aaa' }}>{dbg}</div>
+          </div>
+        )}
+
+        {/* エラー */}
+        {phase === 'error' && (
+          <div style={center}>
+            <div style={{ fontSize:52 }}>😢</div>
+            <div style={{ fontSize:15, color:'#ff6b9d', textAlign:'center', maxWidth:360 }}>{dbg}</div>
+            <button onClick={() => setPhase('title')} style={{
+              background:'#333', border:'none', borderRadius:12,
+              padding:'12px 32px', fontSize:15, color:'#fff', cursor:'pointer',
+            }}>← 戻る</button>
           </div>
         )}
 
         {/* ゲームオーバー */}
         {phase === 'over' && (
-          <div style={{ position:'absolute', inset:0, background:'rgba(0,0,0,0.82)',
+          <div style={{
+            position:'absolute', inset:0, background:'rgba(0,0,0,0.82)',
             borderRadius:18, display:'flex', flexDirection:'column',
-            alignItems:'center', justifyContent:'center', gap:20 }}>
+            alignItems:'center', justifyContent:'center', gap:20,
+          }}>
             <div style={{ fontSize:68 }}>💀</div>
             <div style={{ fontSize:30, fontWeight:800 }}>ゲームオーバー！</div>
             <div style={{ fontSize:24, color:'#ffd700' }}>スコア: {score} 点</div>
@@ -246,10 +292,9 @@ export default function App() {
         )}
       </div>
 
+      {/* デバッグ表示 */}
       {phase === 'play' && (
-        <p style={{ marginTop:12, fontSize:13, color:'#666' }}>
-          顔を動かして絵文字に近づけよう • 💣は避けて！
-        </p>
+        <p style={{ marginTop:10, fontSize:12, color:'#666' }}>{dbg}</p>
       )}
     </div>
   )

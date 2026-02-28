@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react'
 import * as tf from '@tensorflow/tfjs'
 import * as blazeface from '@tensorflow-models/blazeface'
 
-const W = 640, H = 480
+const W = 640, H = 360   // 16:9に変更（カメラと同じアスペクト比）
 const CATCH_R = 65
 const GOOD = ['🍕','🍔','🍣','🍩','🍎','🍓','🌮','🍜','🧁','🍦','🍒','🥐','🍇','🍉','🧆','🌯']
 const BAD  = ['💣','☠️','🤢','🦠','💩']
@@ -64,12 +64,17 @@ export default function App() {
 
     const ctx = canvas.getContext('2d')
 
-    // カメラ映像（鏡像）
+    // カメラ映像（鏡像・アスペクト比を保持してfill）
+    const vw = video.videoWidth  || W
+    const vh = video.videoHeight || H
+    const scale = Math.max(W / vw, H / vh)
+    const sw = vw * scale, sh = vh * scale
+    const ox = (W - sw) / 2,  oy = (H - sh) / 2
     ctx.save()
     ctx.scale(-1, 1)
-    ctx.drawImage(video, -W, 0, W, H)
+    ctx.drawImage(video, -(ox + sw), oy, sw, sh)
     ctx.restore()
-    ctx.fillStyle = 'rgba(0,0,0,0.18)'
+    ctx.fillStyle = 'rgba(0,0,0,0.15)'
     ctx.fillRect(0, 0, W, H)
 
     // スポーン
@@ -78,11 +83,11 @@ export default function App() {
     if (now - g.lastSpawn > interval) {
       const bad = Math.random() < 0.22
       g.emojis.push({
-        x: 30 + Math.random() * (W - 60),
-        y: -35,
+        x: 40 + Math.random() * (W - 80),
+        y: -40,
         e: bad ? BAD[Math.floor(Math.random()*BAD.length)] : GOOD[Math.floor(Math.random()*GOOD.length)],
         bad,
-        spd: 2.2 + g.score * 0.025 + Math.random() * 1.5,
+        spd: 2.0 + g.score * 0.025 + Math.random() * 1.2,
       })
       g.lastSpawn = now
     }
@@ -94,7 +99,15 @@ export default function App() {
     for (let i = g.emojis.length - 1; i >= 0; i--) {
       const em = g.emojis[i]
       em.y += em.spd
-      ctx.font = '38px serif'
+
+      // 背景円（見やすくする）
+      ctx.beginPath()
+      ctx.arc(em.x, em.y, 28, 0, Math.PI * 2)
+      ctx.fillStyle = em.bad ? 'rgba(180,0,0,0.55)' : 'rgba(255,255,255,0.55)'
+      ctx.fill()
+
+      // 絵文字本体
+      ctx.font = '40px serif'
       ctx.fillText(em.e, em.x, em.y)
 
       const dx = em.x - g.fx, dy = em.y - g.fy

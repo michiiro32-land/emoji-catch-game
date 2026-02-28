@@ -18,6 +18,7 @@ export default function App() {
     fx:W/2, fy:H/2,
     running:false, detecting:false,
     lastSpawn:0,
+    vscale:1, vox:0, voy:0,   // ビデオ→Canvas変換係数
   })
 
   const [phase,  setPhase]  = useState('title')
@@ -34,13 +35,17 @@ export default function App() {
     if (!v || !m || v.readyState < 2 || v.paused) return
     g.detecting = true
     try {
-      const preds = await m.estimateFaces(v, false)
+      const preds = await m.estimateFaces(v, false /* returnTensors */)
       if (preds.length > 0) {
-        const [tlX, tlY] = preds[0].topLeft
-        const [brX, brY] = preds[0].bottomRight
-        g.fx = W - (tlX + brX) / 2   // 鏡像補正
-        g.fy = (tlY + brY) / 2
-        setDbg(`顔検出 ✅ (${Math.round(g.fx)}, ${Math.round(g.fy)})`)
+        const p = preds[0]
+        // BlazeFace landmarks: [右目, 左目, 鼻, 口, 右耳, 左耳]
+        const mouth = p.landmarks[3]   // 口の座標
+        const rawX  = mouth[0]
+        const rawY  = mouth[1]
+        // ビデオ座標 → Canvas座標（スケール＋オフセット＋鏡像）
+        g.fx = W - (rawX * g.vscale + g.vox)
+        g.fy = rawY * g.vscale + g.voy
+        setDbg(`口検出 ✅ (${Math.round(g.fx)}, ${Math.round(g.fy)})`)
       } else {
         setDbg('顔を映してください 👀')
       }
@@ -70,6 +75,8 @@ export default function App() {
     const scale = Math.max(W / vw, H / vh)
     const sw = vw * scale, sh = vh * scale
     const ox = (W - sw) / 2,  oy = (H - sh) / 2
+    // 顔検出側でも使うので保存
+    g.vscale = scale; g.vox = ox; g.voy = oy
     ctx.save()
     ctx.scale(-1, 1)
     ctx.drawImage(video, -(ox + sw), oy, sw, sh)
